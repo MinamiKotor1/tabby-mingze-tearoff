@@ -8,23 +8,41 @@ import {
     Logger,
     LogService,
     NotificationsService,
-    Profile,
-    ProfilesService,
+    RecoveryToken,
     SplitTabComponent,
+    TabRecoveryService,
 } from 'tabby-core'
 import { BaseTerminalTabComponent } from 'tabby-terminal'
 
-interface DuplicateWindowConfig {
+import {
+    DEFAULT_DRAG_OUT_MARGIN,
+    DEFAULT_MAX_PENDING_AGE_MS,
+    PENDING_TEAROFF_KEY_PREFIX,
+    TEAROFF_HOTKEY_ID,
+} from './constants'
+
+interface TearoffConfig {
     enableDragOut: boolean
     dragOutMargin: number
+    maxPendingAgeMS: number
 }
 
-interface ProfileData {
-    profile: Profile
+interface TearoffUserConfig {
+    enableDragOut?: unknown
+    dragOutMargin?: unknown
+    maxPendingAgeMS?: unknown
+}
+
+interface PendingTearoffData {
+    requestID: string
     createdAt: number
+    recoveryToken: RecoveryToken
 }
 
-const PROFILE_KEY_PREFIX = 'mingze-tearoff-profile-'
+interface PendingTearoffRecord {
+    key: string
+    data: PendingTearoffData
+}
 
 @Injectable({ providedIn: 'root' })
 export class TearoffService {
@@ -40,7 +58,7 @@ export class TearoffService {
         private hotkeys: HotkeysService,
         private notifications: NotificationsService,
         private config: ConfigService,
-        private profiles: ProfilesService,
+        private tabRecovery: TabRecoveryService,
         log: LogService,
     ) {
         this.logger = log.create('mingze-tearoff')
@@ -53,7 +71,7 @@ export class TearoffService {
         this.initialized = true
 
         this.hotkeys.hotkey$.subscribe((hotkey: string) => {
-            if (hotkey === 'tearoff-tab') {
+            if (hotkey === TEAROFF_HOTKEY_ID) {
                 void this.duplicateToNewWindow(this.app.activeTab)
             }
         })
@@ -62,9 +80,8 @@ export class TearoffService {
             this.onDragStateChanged(tab)
         })
 
-        // Listen for app ready to consume pending profiles
         this.app.ready$.subscribe(() => {
-            void this.consumePendingProfile()
+            void this.consumePendingRecovery()
         })
     }
 
@@ -78,9 +95,6 @@ export class TearoffService {
         return false
     }
 
-    /**
-     * Duplicate the tab's profile to a new window.
-     */
     async duplicateToNewWindow(tab: BaseTabComponent | null): Promise<boolean> {
         if (!tab) {
             return false
@@ -92,34 +106,25 @@ export class TearoffService {
         }
 
         try {
-            const terminalTab = this.getTerminalTab(tab)
-            if (!terminalTab) {
-                this.notifications.error('Could not find terminal tab')
+            const recoveryToken = await this.tabRecovery.getFullRecoveryToken(tab)
+            if (!recoveryToken) {
+                this.notifications.error('Could not create recovery token for this tab')
                 return false
             }
 
-            const profile = this.getTabProfile(terminalTab)
-            if (!profile) {
-                this.notifications.error('Could not get tab profile')
-                return false
-            }
+            const request = this.createPendingRequest(recoveryToken)
+            const requestKey = this.pendingStorageKey(request.requestID)
 
-            // Store profile in localStorage for new window
-            const profileKey = PROFILE_KEY_PREFIX + Date.now()
-            const profileData: ProfileData = {
-                profile,
-                createdAt: Date.now(),
-            }
-            localStorage.setItem(profileKey, JSON.stringify(profileData))
-            this.logger.info('Saved profile for new window:', profile.name)
+            this.prunePendingRequests()
+            localStorage.setItem(requestKey, JSON.stringify(request))
 
-            // Open new window
+            this.logger.info('Saved tear-off request:', request.requestID, 'type=', recoveryToken.type)
+
             this.hostApp.newWindow()
 
-            // Clean up after 30 seconds
-            setTimeout(() => {
-                localStorage.removeItem(profileKey)
-            }, 30000)
+            window.setTimeout(() => {
+                this.removePendingRequest(requestKey)
+            }, this.currentConfig().maxPendingAgeMS + 5000)
 
             return true
         } catch (error) {
@@ -129,94 +134,44 @@ export class TearoffService {
         }
     }
 
-    /**
-     * Called on app ready to check if there's a pending profile to open
-     */
-    async consumePendingProfile(): Promise<void> {
-        const keys = this.listPendingProfileKeys()
-        if (keys.length === 0) {
+    async consumePendingRecovery(): Promise<void> {
+        const pending = this.collectPendingRequests()
+        if (pending.length === 0) {
             return
         }
 
-        // Get most recent pending profile
-        const key = keys[keys.length - 1]
-        const raw = localStorage.getItem(key)
-        if (!raw) {
-            return
-        }
+        const next = pending[0]
+        this.removePendingRequest(next.key)
 
         try {
-            const data: ProfileData = JSON.parse(raw)
-            const age = Date.now() - data.createdAt
-
-            // Only consume if created recently (within 10 seconds)
-            if (age > 10000) {
-                this.logger.info('Pending profile too old, ignoring:', age, 'ms')
+            const recoveredTab = await this.tabRecovery.recoverTab(next.data.recoveryToken, true)
+            if (!recoveredTab) {
+                this.logger.warn('Could not recover pending tab from request:', next.data.requestID)
                 return
             }
 
-            // Remove from localStorage immediately
-            localStorage.removeItem(key)
-
-            if (data.profile) {
-                this.logger.info('Opening tab from pending profile:', data.profile.name)
-                // Use ProfilesService to open the tab
-                await this.profiles.openNewTabForProfile(data.profile)
-            }
+            this.app.openNewTab(recoveredTab)
+            this.logger.info('Recovered tab from request:', next.data.requestID)
         } catch (error) {
-            this.logger.warn('Failed to consume pending profile', error)
+            this.logger.warn('Failed to consume pending recovery', error)
         }
-    }
-
-    private listPendingProfileKeys(): string[] {
-        const keys: string[] = []
-        for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i)
-            if (key?.startsWith(PROFILE_KEY_PREFIX)) {
-                keys.push(key)
-            }
-        }
-        return keys.sort()
-    }
-
-    private getTerminalTab(tab: BaseTabComponent): BaseTerminalTabComponent | null {
-        if (tab instanceof BaseTerminalTabComponent) {
-            return tab
-        }
-        if (tab instanceof SplitTabComponent) {
-            return this.getFirstTerminalTab(tab)
-        }
-        return null
-    }
-
-    private getFirstTerminalTab(splitTab: SplitTabComponent): BaseTerminalTabComponent | null {
-        for (const child of splitTab.getAllTabs()) {
-            if (child instanceof BaseTerminalTabComponent) {
-                return child
-            }
-        }
-        return null
-    }
-
-    private getTabProfile(tab: BaseTerminalTabComponent): Profile | null {
-        const tabAny = tab as unknown as { profile?: Profile }
-        if (tabAny.profile) {
-            return tabAny.profile
-        }
-        return null
     }
 
     private onDragStateChanged(tab: BaseTabComponent | null): void {
-        if (!this.currentConfig().enableDragOut) {
-            return
-        }
-        if (tab) {
-            this.draggedTab = tab
-            this.attachDragListeners()
-        } else {
+        if (!tab) {
             this.draggedTab = null
             this.detachDragListeners()
+            return
         }
+
+        if (!this.currentConfig().enableDragOut) {
+            this.draggedTab = null
+            this.detachDragListeners()
+            return
+        }
+
+        this.draggedTab = tab
+        this.attachDragListeners()
     }
 
     private attachDragListeners(): void {
@@ -259,9 +214,18 @@ export class TearoffService {
             return
         }
 
-        setTimeout(() => {
+        window.setTimeout(() => {
             void this.duplicateToNewWindow(tab)
         })
+    }
+
+    private getFirstTerminalTab(splitTab: SplitTabComponent): BaseTerminalTabComponent | null {
+        for (const child of splitTab.getAllTabs()) {
+            if (child instanceof BaseTerminalTabComponent) {
+                return child
+            }
+        }
+        return null
     }
 
     private isPointOutsideWindow(x: number, y: number): boolean {
@@ -274,11 +238,118 @@ export class TearoffService {
         return x < left - margin || x > right + margin || y < top - margin || y > bottom + margin
     }
 
-    private currentConfig(): DuplicateWindowConfig {
-        const userConfig = this.config.store?.mingzeTearoff ?? {}
+    private createPendingRequest(recoveryToken: RecoveryToken): PendingTearoffData {
         return {
-            enableDragOut: userConfig.enableDragOut ?? true,
-            dragOutMargin: typeof userConfig.dragOutMargin === 'number' ? userConfig.dragOutMargin : 0,
+            requestID: this.generateRequestID(),
+            createdAt: Date.now(),
+            recoveryToken,
+        }
+    }
+
+    private generateRequestID(): string {
+        return String(Date.now()) + '-' + Math.random().toString(36).slice(2, 10)
+    }
+
+    private pendingStorageKey(requestID: string): string {
+        return PENDING_TEAROFF_KEY_PREFIX + requestID
+    }
+
+    private collectPendingRequests(): PendingTearoffRecord[] {
+        const records: PendingTearoffRecord[] = []
+        const staleKeys: string[] = []
+        const now = Date.now()
+        const maxAge = this.currentConfig().maxPendingAgeMS
+
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i)
+            if (!key?.startsWith(PENDING_TEAROFF_KEY_PREFIX)) {
+                continue
+            }
+
+            const raw = localStorage.getItem(key)
+            if (!raw) {
+                staleKeys.push(key)
+                continue
+            }
+
+            const parsed = this.parsePendingRequest(raw)
+            if (!parsed) {
+                staleKeys.push(key)
+                continue
+            }
+
+            if (now - parsed.createdAt > maxAge) {
+                staleKeys.push(key)
+                continue
+            }
+
+            records.push({ key, data: parsed })
+        }
+
+        for (const key of staleKeys) {
+            this.removePendingRequest(key)
+        }
+
+        return records.sort((a, b) => a.data.createdAt - b.data.createdAt)
+    }
+
+    private parsePendingRequest(raw: string): PendingTearoffData | null {
+        try {
+            const parsed = JSON.parse(raw) as {
+                requestID?: unknown
+                createdAt?: unknown
+                recoveryToken?: unknown
+            }
+
+            if (typeof parsed.requestID !== 'string') {
+                return null
+            }
+
+            if (typeof parsed.createdAt !== 'number' || !Number.isFinite(parsed.createdAt)) {
+                return null
+            }
+
+            if (!this.isRecoveryToken(parsed.recoveryToken)) {
+                return null
+            }
+
+            return {
+                requestID: parsed.requestID,
+                createdAt: parsed.createdAt,
+                recoveryToken: parsed.recoveryToken,
+            }
+        } catch {
+            return null
+        }
+    }
+
+    private isRecoveryToken(value: unknown): value is RecoveryToken {
+        if (typeof value !== 'object' || value === null) {
+            return false
+        }
+
+        return typeof (value as Record<string, unknown>).type === 'string'
+    }
+
+    private prunePendingRequests(): void {
+        void this.collectPendingRequests()
+    }
+
+    private removePendingRequest(key: string): void {
+        localStorage.removeItem(key)
+    }
+
+    private currentConfig(): TearoffConfig {
+        const userConfig = (this.config.store?.mingzeTearoff ?? {}) as TearoffUserConfig
+
+        return {
+            enableDragOut: typeof userConfig.enableDragOut === 'boolean' ? userConfig.enableDragOut : true,
+            dragOutMargin: typeof userConfig.dragOutMargin === 'number' && Number.isFinite(userConfig.dragOutMargin)
+                ? Math.max(0, userConfig.dragOutMargin)
+                : DEFAULT_DRAG_OUT_MARGIN,
+            maxPendingAgeMS: typeof userConfig.maxPendingAgeMS === 'number' && Number.isFinite(userConfig.maxPendingAgeMS)
+                ? Math.max(1000, userConfig.maxPendingAgeMS)
+                : DEFAULT_MAX_PENDING_AGE_MS,
         }
     }
 }

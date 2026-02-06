@@ -7,19 +7,27 @@ Tabby plugin that detaches tabs into a new window.
 - Drag a tab outside the current window to detach it
 - Tab context menu action: `分离到新窗口`
 - Hotkey command: `tearoff-tab`
-- State transfer uses Tabby recovery tokens
+- Tab transfer uses Tabby recovery tokens instead of profile only cloning
 
 ## Notes
 
-- Lossless transfer is guaranteed for local terminal tabs (`app:local-tab`) because they carry `restoreFromPTYID`.
-- Non-local terminal tabs can still be detached, but behavior depends on each tab type's recovery provider.
-- Scrollback restore is limited by Tabby's xterm serialization behavior.
+- Local terminal tabs (`app:local-tab`) usually preserve session continuity better because recovery data carries `restoreFromPTYID`.
+- Non local tabs depend on each tab type recovery provider.
+- Pending tear off requests are stored for a short time in `localStorage` and expired entries are cleaned up automatically.
 
 ## Build
 
 ```bash
 yarn install
+yarn typecheck
 yarn build
+```
+
+Development build and watch:
+
+```bash
+yarn build:dev
+yarn watch
 ```
 
 If you previously tried to build with `node-sass`, clear old dependencies first:
@@ -50,4 +58,5 @@ hotkeys:
   tearoff-tab: []
 ```
 
-You can bind `tearoff-tab` in Tabby hotkey settings.
+- `maxPendingAgeMS` controls how long a pending detach request stays valid.
+- You can bind `tearoff-tab` in Tabby hotkey settings.

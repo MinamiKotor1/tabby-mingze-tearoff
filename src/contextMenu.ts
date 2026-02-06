@@ -1,5 +1,7 @@
 import { Injectable } from '@angular/core'
 import { BaseTabComponent, MenuItemOptions, TabContextMenuItemProvider } from 'tabby-core'
+
+import { TEAROFF_CONTEXT_MENU_LABEL } from './constants'
 import { TearoffService } from './tearoff.service'
 
 @Injectable()
@@ -19,11 +21,9 @@ export class TearoffContextMenuProvider extends TabContextMenuItemProvider {
 
         return [
             {
-                label: '在新窗口中打开',
+                label: TEAROFF_CONTEXT_MENU_LABEL,
                 click: () => {
-                    setTimeout(() => {
-                        void this.tearoff.duplicateToNewWindow(tab)
-                    })
+                    void this.tearoff.duplicateToNewWindow(tab)
                 },
             },
         ]
