@@ -36,6 +36,7 @@ interface PendingClaim {
 interface SessionLike {
     open?: boolean
     getID?: () => string|null
+    getPTYID?: () => string|null
 }
 
 interface SessionSnapshot {
@@ -122,7 +123,7 @@ export class TearoffService {
         let suspendedSessions: SessionSnapshot[] = []
 
         try {
-            const token = await this.tabRecovery.getFullRecoveryToken(tab, { includeState: true })
+            const token = await this.tabRecovery.getFullRecoveryToken(tab)
             if (!token) {
                 this.notifications.error('This tab does not support state transfer')
                 return false
@@ -273,10 +274,10 @@ export class TearoffService {
         const snapshots: SessionSnapshot[] = []
         for (const terminalTab of this.collectTerminalTabs(tab)) {
             const session = (terminalTab as { session?: SessionLike }).session
-            if (!session || typeof session.getID !== 'function' || typeof session.open !== 'boolean') {
+            if (!session || typeof session.open !== 'boolean') {
                 continue
             }
-            const sessionID = session.getID()
+            const sessionID = this.getSessionID(session)
             if (!sessionID || !transferablePTYIDs.has(sessionID)) {
                 continue
             }
@@ -293,8 +294,18 @@ export class TearoffService {
         }
     }
 
-    private collectTerminalTabs (root: BaseTabComponent): BaseTerminalTabComponent<any>[] {
-        const result: BaseTerminalTabComponent<any>[] = []
+    private getSessionID (session: SessionLike): string|null {
+        if (typeof session.getID === 'function') {
+            return session.getID()
+        }
+        if (typeof session.getPTYID === 'function') {
+            return session.getPTYID()
+        }
+        return null
+    }
+
+    private collectTerminalTabs (root: BaseTabComponent): BaseTerminalTabComponent[] {
+        const result: BaseTerminalTabComponent[] = []
         const stack: BaseTabComponent[] = [root]
 
         while (stack.length > 0) {

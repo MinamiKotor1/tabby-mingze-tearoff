@@ -7,7 +7,7 @@ Tabby plugin that detaches tabs into a new window.
 - Drag a tab outside the current window to detach it
 - Tab context menu action: `分离到新窗口`
 - Hotkey command: `tearoff-tab`
-- State transfer uses Tabby recovery tokens (`includeState: true`)
+- State transfer uses Tabby recovery tokens
 
 ## Notes
 
