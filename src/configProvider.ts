@@ -5,7 +5,6 @@ export class TearoffConfigProvider extends ConfigProvider {
         mingzeTearoff: {
             enableDragOut: true,
             dragOutMargin: 0,
-            maxPendingAgeMS: 60000,
         },
         hotkeys: {
             'tearoff-tab': [],

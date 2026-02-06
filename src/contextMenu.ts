@@ -6,23 +6,23 @@ import { TearoffService } from './tearoff.service'
 export class TearoffContextMenuProvider extends TabContextMenuItemProvider {
     weight = 15
 
-    constructor (
+    constructor(
         private tearoff: TearoffService,
     ) {
         super()
     }
 
-    async getItems (tab: BaseTabComponent): Promise<MenuItemOptions[]> {
+    async getItems(tab: BaseTabComponent): Promise<MenuItemOptions[]> {
         if (!this.tearoff.isSupportedTab(tab)) {
             return []
         }
 
         return [
             {
-                label: '分离到新窗口',
+                label: '在新窗口中打开',
                 click: () => {
                     setTimeout(() => {
-                        void this.tearoff.tearoff(tab)
+                        void this.tearoff.duplicateToNewWindow(tab)
                     })
                 },
             },

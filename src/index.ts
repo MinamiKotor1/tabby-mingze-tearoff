@@ -19,7 +19,7 @@ import { TearoffService } from './tearoff.service'
     ],
 })
 export default class MingzeTearoffModule {
-    constructor (
+    constructor(
         tearoff: TearoffService,
     ) {
         tearoff.init()
