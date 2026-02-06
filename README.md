@@ -22,6 +22,21 @@ yarn install
 yarn build
 ```
 
+If you previously tried to build with `node-sass`, clear old dependencies first:
+
+```bash
+rm -rf node_modules yarn.lock
+yarn install
+```
+
+Windows PowerShell:
+
+```powershell
+rmdir /s /q node_modules
+del yarn.lock
+yarn install
+```
+
 ## Config
 
 Default config registered by this plugin:
